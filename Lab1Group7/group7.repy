@@ -1,0 +1,75 @@
+#declaring global variables
+mycontext['messagepost'] = ''    # message that is typed in the blackboard
+mycontext['vessellist']=(['129.15.78.30','192.1.249.138','148.81.140.193','206.23.240.29','130.79.48.55','138.48.3.202','150.254.212.148', '75.130.96.13']) # acquired ip addresses of our vessels
+deletemyownip = mycontext['vessellist'].index(getmyip())   #prevents the posting computer from posting a message to its own board when it is posting to other computers
+del mycontext['vessellist'][deletemyownip]   
+
+def board(ip, port, sockobj, thiscommhandle, listencommhandle):
+  msgheader = sockobj.recv(1024) # Receive message, 
+  # React depending on message type: HTTP GET or POST, or some other type of communication.
+  
+  if msgheader.startswith( 'GET' ):  #fetches the sent message from the sending vessel to the recipient's web browser
+    htmlresponse = """<html><head>
+    <meta content="text/html; charset=utf-8" http-equiv="content-type">
+    <title>Group7</title>
+    </head>
+    <body>
+    <h2> Board Content</h2>
+    <p>""" + mycontext['messagepost']+"""</p>   
+    <br>
+    <h3>Submit to board<h3>
+    <textarea rows="4" cols="50" name="comment" form="usrform"></textarea>
+    <form action="" id="usrform" method="post">
+    <input type="submit">
+    </form>
+    </body></html>"""
+    sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(htmlresponse), htmlresponse))
+    stopcomm(thiscommhandle)  
+  elif msgheader.startswith( 'POST' ):    
+    mycontext['messagepost'] +=msgheader[msgheader.find('comment')+8:] +'<br>'
+    htmlresponse = """<html><head>
+    <meta content="text/html; charset=utf-8" http-equiv="content-type">
+    <title>Group7</title>
+    </head>
+    <body>
+    <h2> Board Content</h2>
+   
+    <br> """+ mycontext['messagepost']+ """</p></br>
+    <h3>Submit to board<h3>
+    <textarea rows="4" cols="50" name="comment" form="usrform"></textarea>
+    <form action="" id="usrform" method="post">
+    <input type="submit">
+    </form>
+    </body></html>"""
+    sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(htmlresponse), htmlresponse))
+   
+
+    for i in mycontext['vessellist']: 
+        sockobj=openconn(i,63168)  #open tcp connection on port 63168 on any of the chosen vessels
+        sockobj.send(msgheader[msgheader.find('comment')+8:])     #send the message typed in the board to that opened connection
+    stopcomm(thiscommhandle)                       #close the connection after sending the message
+  else:
+    mycontext['messagepost'] += msgheader + '<br>' 
+    stopcomm(thiscommhandle)
+    
+        
+if callfunc == 'initialize':
+  if len(callargs) > 1:
+    raise Exception("Too many call arguments")
+
+  # Running remotely (assuming that we pass input argument only remotely):
+  # whenever this vessel gets a connection on its IPaddress:Clearinghouseport it'll call function board
+  elif len(callargs) == 1:
+    port = int(callargs[0])
+    ip = getmyip()
+
+  # Running locally:
+  # whenever we get a connection on 127.0.0.1:12345 we'll call board
+  else:
+    port = 12345
+    ip = '127.0.0.1'
+  listencommhandle = waitforconn(ip,port,board)
+  
+ 

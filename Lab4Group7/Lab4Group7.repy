@@ -1,0 +1,191 @@
+# Declaring global variables
+mycontext['msg_lock'] = getlock()  # Acquiring a lock to ensure mutual exclusion 
+mycontext['timestamp'] = [] # Initialize the timestamps to an empty list
+mycontext['port'] = 63100
+mycontext['logical_clock'] = 0 # Initializing logical clock list to 0
+mycontext['messagepost']= '' # message that is typed in the blackboard
+mycontext['vessellist'] = ["130.194.252.9", "134.117.226.181", "130.149.49.136", "128.122.140.119", "128.223.8.111", "198.82.160.239", "93.180.19.232", "128.220.231.2"]
+
+if getmyip() in mycontext['vessellist']:
+  mycontext['vessellist'].remove(getmyip())
+
+#Function for calling html codes for accepting the msg sent and the current logical clock
+def htmltags(sockobj,msg):
+  htmlresponse = """<html><head>
+  <meta content="text/html; charset=utf-8" http-equiv="content-type">
+  <title>Group7</title>
+  </head>
+  <body>
+  <h2> Board Content</h2><br> 
+  <p> """ + msg + """
+  <h4>Current clock: """ + str(mycontext["logical_clock"]) + """ </h4>
+  <h3>Submit to board<h3>
+  <textarea rows="7" cols="50" name="comment" form="usrform"></textarea>
+  <form action="" id="usrform" method="post">
+  <input type="submit">
+  </form>
+  </body></html>"""
+  sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+  "Content-length: %i\r\n\r\n%s" % (len(htmlresponse), htmlresponse))
+
+#Function for selecting N/2 randomly then retun the list of their addresses
+def SelectVessel():
+  mycontext['nodeslist'] = []
+  mycontext['vessel_num'] = len(mycontext['vessellist'])
+  for i in range(0,mycontext['vessel_num']/2):
+    random_num = int(randomfloat()*mycontext['vessel_num']) # Generating random number
+    while(mycontext['vessellist'][random_num] in mycontext['nodeslist'] or mycontext['vessellist'][random_num] == getmyip()):
+      random_num = int(randomfloat()*mycontext['vessel_num']) # Regenerating random number
+    mycontext['nodeslist'].append(mycontext['vessellist'][random_num])
+  return mycontext['nodeslist']
+
+# Function for the vessels to read contents of the board
+def readBoard(nodes):
+  #Initialize the read_list to an empty list
+  mycontext["read_list"] = []
+  for node in nodes:
+    try:
+      # Open a connection with the each vessel then send the read request to that vessel
+      # then append the contents to the read_list and close that connection
+      socketobject = openconn(node,mycontext['port'],timeout=10)
+      socketobject.send("RREQ")
+      fboard = socketobject.recv(1024) 
+      # After recieving, append the board content to a list
+      # then close the connection with the socket
+      mycontext["read_list"].append(fboard)
+      socketobject.close()
+    except Exception:
+      continue
+  return mycontext["read_list"]
+
+# Function for choosing the board withe the latest contents
+def LatestContentBoard(board_contents):
+  # Check if the number of contents on the board are equal to N/2
+  if len(board_contents) != mycontext['vessel_num']/2:
+    return "fail"
+  # Get the content of the logical clock read then append it in the timestamp list
+  # then find the highest time from the timestamp list
+  for fboard in board_contents:
+    mycontext['timestamp'].append(fboard.split('-')[0])
+  max_time = int(max(mycontext['timestamp']))
+
+  # Get the vessels time from the logical clock read then select the board with the 
+  # highest logical clock
+  for fboard in board_contents:
+    cstamp = int(fboard.split('-')[0])
+    if cstamp == max_time:
+      chosenboard = fboard
+      break
+
+  # If the vessel finds the highest time obtained is greater then its logical clock
+  # it updates its logical clock with the highest time obtained
+  # then update its own board to the one got from external node//////////
+  if max_time > mycontext['logical_clock']:
+    mycontext['logical_clock'] = max_time
+    chosenboard = chosenboard.split('-')[1]
+    mycontext['messagepost'] = chosenboard
+  return "success"
+
+# Function 
+def mutualwrite(msg):
+  # Select N/2 vessels then read the contents of those vessels
+  nodes = SelectVessel()
+  node1 = readBoard(nodes)
+  # Select N/2 vessels then read their contents, then update them to the latest
+  # contents read from a bard by calling function SelectVessel within function 
+  # readBoard and then calling readBoard() within LatestContentBoard() 
+  if LatestContentBoard(node1) == "fail":
+    return
+  # Get a message consisting of the current time and the message that has been posted
+  current_time = str(mycontext['logical_clock'] + 1) 
+  my_message = current_time + '-' + mycontext['messagepost'] + msg
+  nodes.sort()
+  # Update the messagepost list with a mew message being posted and increment
+  # the logical clock by one
+  mycontext['messagepost'] = mycontext['messagepost'] + msg
+  mycontext['logical_clock'] = mycontext['logical_clock'] + 1
+
+  # For every vessel in N/2 vessels open a connection with one of them at a time
+  try:
+    for node in nodes:
+        # Open the connection with the vessel then send the lock request
+        socketobject = openconn(node,mycontext['port'],timeout=10)
+        socketobject.send("lock_request")
+        # After reply has been received, check if it is a lock reply or an update
+        # if it is a lock reply then send a my_message and if its is an update then 
+        # unlock then close the connection
+        reply = socketobject.recv(1024) 
+        if reply == "lock_reply":
+          socketobject.send(my_message)
+        reply = socketobject.recv(1024) 
+        if reply == "update":
+          socketobject.send("unlock")
+        socketobject.close() 
+  except Exception:
+    return False
+  return True
+
+def board(ip, port, sockobj, thiscommhandle, listencommhandle):
+  # Receive message
+  msgheader = sockobj.recv(1024)  
+  vessel1 = SelectVessel() # Select N/2 vessels 
+  # React depending on message type: HTTP GET or POST, or some other type of communication.
+  if msgheader.startswith( 'GET' ):
+    # Update the contents read from N/2 to board containg the latest contents
+    # then supply it to the msg part of the html
+    LatestContentBoard(readBoard(vessel1))
+    htmltags(sockobj,mycontext['messagepost'])
+    stopcomm(thiscommhandle) # Close the connection  
+
+  elif msgheader.startswith( 'POST' ):  
+    # Acquire a lock to write to N/2 + 1 vessel by calling mutualwrite() function
+    # then supply the html with the contents
+    mycontext['msg_lock'].acquire()
+    updatemsg = msgheader[msgheader.index('comment=')+8:] + "<br>"
+    mutualwrite(updatemsg)
+    htmltags(sockobj,mycontext['messagepost'])
+    stopcomm(thiscommhandle) # Close the connection after writing
+    mycontext['msg_lock'].release() # Release the lock
+
+  elif msgheader.startswith( 'RREQ' ):
+    # if a ReadRequest comes, then prepare message to send which is current time stamp + delimiter + board content
+    localb = str(mycontext['logical_clock']) + "-" + mycontext['messagepost']
+    sockobj.send(localb)
+    sockobj.close() # Close the connection after sending
+
+  # If it is a lock request, unblock the vessel to avoid idenfinate blocking 
+  # Then send an acknowledgement for the lock request 
+  elif msgheader.startswith( 'lock_request' ):
+    if mycontext['msg_lock'].acquire(False) == True:
+      try:
+        sockobj.send('lock_reply')
+        newboard = sockobj.recv(1024)
+        # Get the contents of the logical clock and the message from the update msg received
+        # then send update back
+        mycontext['messagepost'] = newboard.split('-')[1]
+        mycontext['logical_clock'] = int(newboard.split('-')[0])
+        sockobj.send('update')
+        # After the acknowledgement is received, release the lock
+        reply = sockobj.recv(1024)
+        mycontext['msg_lock'].release()
+      # If exception happen release the lock then close the connection whether 
+      # the locking was successful or not  
+      except:
+        mycontext['msg_lock'].release()
+    sockobj.close()
+  else:
+    stopcomm(thiscommhandle)
+if callfunc == 'initialize':
+  if len(callargs) > 1:
+    raise Exception("Too many call arguments")
+    # Running remotely (assuming that we pass input argument only remotely):
+    # whenever this vessel gets a connection on its IPaddress:Clearinghouseport it'll call function board
+  elif len(callargs) == 1:
+    mycontext['port'] = int(callargs[0])
+    ip = getmyip()
+    # Running locally
+    # whenever we get a connection on 127.0.0.1:12345 we'll call board
+  else:
+    mycontext['port'] = 12345
+    ip = '127.0.0.1'
+  listencommhandle = waitforconn(ip,mycontext['port'],board)

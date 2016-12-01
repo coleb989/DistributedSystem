@@ -1,0 +1,152 @@
+#This blackboard program offers a solution that integrates a centralized communication scheme through a nominated leader
+# and a leader election algorithm.
+
+#declaring global variables
+mycontext['local_id']= int(randomfloat()*1000)  #generating random IDs 
+mycontext['lock'] = getlock() # acquiring the lock
+mycontext['messagepost'] = ''   # message that is typed in the blackboard
+mycontext['ip_leader'] = str(getmyip()) 
+mycontext['id_leader'] = mycontext['local_id']
+mycontext['own_ip'] = str(getmyip()) 
+mycontext['leaderFlag'] = False
+mycontext['vessellist']=(['134.117.226.180', '130.79.48.55', '193.166.167.5', '213.73.40.105', '206.207.248.35']) # acquired ip addresses of our vessels
+#deletemyownip = mycontext['vessellist'].index(getmyip())   
+#del mycontext['vessellist'][deletemyownip]   
+
+
+#finding a neighbour in a ring network
+def find_neighbour():
+  indx = mycontext['vessellist'].index(getmyip())  
+  if indx < len(mycontext['vessellist'])-1:
+    return mycontext['vessellist'][indx+1]
+  else:
+    return mycontext['vessellist'][0]
+
+#open a connection on a chosen IP address and port number and send msg and close the connection
+#the locks are for ensuring mutual exclusiveness in the connection
+def sendmessage(address,msg):
+  mycontext['lock'].acquire()
+  try:
+    sockobj = openconn(address,63100)
+    sockobj.send(msg)
+    sockobj.close()
+  except:                                     
+    print 'Exception connection between '+ address+' and ' + mycontext['own_ip']
+  mycontext['lock'].release()
+
+#function for circulating a token message in a ring network. Everyone passes the token to their next neighbour
+#first IP address to circulate the message initially assumes itself as a leader in a ring and passes on it's ID and IP along the message to it's neighbor
+def message_circulation():
+  mycontext['lock'].acquire()
+  mycontext['own_ip']=getmyip()
+  create_message= 'Token' + ':'+ str(mycontext['own_ip']) + ':' + str(mycontext['ip_leader']) + ':' + str(mycontext['id_leader'])
+  mycontext['lock'].release()
+  sendmessage(find_neighbour(),create_message)
+  
+  
+ #function for spreading/announcing the confirmed leader through the ring network
+def spread_leader():
+  create_message= 'confirmLeader' + ':' + mycontext['ip_leader'] + ':' + str(mycontext['id_leader'])
+  sendmessage(find_neighbour(),create_message)
+
+    
+
+def htmltags(): #function for calling html
+    htmlresponse = """<html><head>
+    <meta content="text/html; charset=utf-8" http-equiv="content-type">
+    <title>Group7</title>
+    </head>
+    <body>
+    <h2> Board Content</h2>
+    <h4><b> Leader IP : """+ mycontext['ip_leader'] +"""<br>Leader ID : """+str(mycontext['id_leader']) +"""</b></h4>
+    <br> """ +mycontext['messagepost']+ """</p></br>
+    <h3>Submit to board<h3>
+    <textarea rows="4" cols="50" name="comment" form="usrform"></textarea>
+    <form action="" id="usrform" method="post">
+    <input type="submit">
+    </form>
+    </body></html>"""
+    return htmlresponse
+    
+def board(ip, port, sockobj, thiscommhandle, listencommhandle):
+  msgheader = sockobj.recv(1024) # Receive message, 
+  # React depending on message type: HTTP GET or POST, or some other type of communication.
+  if msgheader.startswith( 'GET' ):  #fetches the sent message from the sending vessel to the recipient's web browser
+     html_content = htmltags()
+     sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(html_content),  html_content))
+     stopcomm(thiscommhandle) 
+  elif msgheader.startswith( 'POST' ):    
+    msgg = msgheader[msgheader.find('comment')+8:] +'<br>'
+    #All messages are first sent to the leader IP and it's the leader IP that will forward the message to the rest of the the IPs(vessels)
+    sendmessage(mycontext['ip_leader'],"m$g:" + msgg)
+    html_content = htmltags()
+    sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(html_content),  html_content))
+    stopcomm(thiscommhandle) #close the connection after sending the message
+
+  elif msgheader.startswith( 'Token' ):     
+    recieved_message = msgheader.split(":") #split the message token into ownerIP,leaderIP and leaderID parts
+    owner = recieved_message[1] 
+    leip = recieved_message[2]
+    leid = int(recieved_message[3])
+    
+    #Leader Election is done here!!
+    #if the circulated token comes back and has the same IP as the localIP, that means the initial IP maintained leadership,don't update the contents of the token message.
+    if owner == mycontext['own_ip']: 
+      mycontext['ip_leader'] = leip    #leip is the announced leader IP
+      mycontext['id_leader'] = leid    #leid is the announced leaderd ID
+      if mycontext['ip_leader'] == mycontext['own_ip']:
+        mycontext['leaderFlag']  = True   
+      #Leader is elected when the leader flag is set to TRUE! send confirmation to one right neighbour
+      spread_leader()
+    else:
+      if leid > mycontext['local_id']:
+        create_message= msgheader
+      else:
+        create_message = 'Token' + ':'+ owner + ':' + mycontext['own_ip'] + ':' + str(mycontext['local_id'])
+      sendmessage(find_neighbour(),create_message)
+  elif msgheader.startswith( 'confirmLeader' ):  
+    recieved_message = msgheader.split(":")
+    mycontext['ip_leader'] = recieved_message[1]
+    mycontext['id_leader'] = int(recieved_message[2])
+
+    #when the current IP address is at the same time the Leader IP, raise a flag to TRUE and exclude a leader IP from sending a message to itself
+    #otherwise, the leader IP will propagate the message to all other IP addresses(vessels)
+    if mycontext['ip_leader'] == mycontext['own_ip']:  
+        mycontext['leaderFlag']  = True 
+  elif msgheader.startswith( 'm$g'):
+    stopcomm(thiscommhandle)
+    if mycontext['leaderFlag'] == True:
+      templist = mycontext['vessellist']
+      if mycontext['own_ip'] in mycontext['vessellist']:
+        templist.remove(mycontext['own_ip']) #deleting the leader's IP from a list of "to recieve message" IP addresses(vessels)
+      for ves in templist:
+        sendmessage(ves,msgheader)   #leader propagates message to the rest of the IP addresses/vessels
+
+    
+    mesg = msgheader.split(':')  
+    mesg = mesg[1] 
+    mycontext['lock'].acquire()
+    mycontext['messagepost'] = mycontext['messagepost'] + mesg + '<br>' #update new message to the old message and display it on the board
+    mycontext['lock'].release()
+  else:
+    return  
+
+if callfunc == 'initialize':
+  if len(callargs) > 1:
+    raise Exception("Too many call arguments")
+    # Running remotely (assuming that we pass input argument only remotely):
+    # whenever this vessel gets a connection on its IPaddress:Clearinghouseport it'll call function board
+  elif len(callargs) == 1:
+    port = int(callargs[0])
+    ip = getmyip()
+
+    # Running locally:
+    # whenever we get a connection on 127.0.0.1:12345 we'll call board
+  else:
+    port = 12345
+    ip = '127.0.0.1'
+  listencommhandle = waitforconn(ip,port,board)
+  sleep(5)
+  message_circulation()

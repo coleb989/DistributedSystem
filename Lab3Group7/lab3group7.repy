@@ -1,0 +1,124 @@
+#This program implements eventual consistency in our distributed blackboard system using logical clocks 
+#declaring global variables
+mycontext['sequ']=[]  
+mycontext['msg_lock'] = getlock() #locks for offering mutual exclusion among replicas when broadcasting the message 
+mycontext['seq_lock'] = getlock() #locks for offering mutual exclusion to the logical clocks as they update their clock values
+mycontext['timestamp'] = ""
+mycontext['msg_container'] = []
+mycontext['seq_num'] = 0
+mycontext['messagepost'] = ""    # message that is typed in the blackboard
+mycontext['vessellist']=(['142.103.2.2', '129.93.229.139', '129.32.84.160', '193.191.148.227']) # acquired ip addresses of our vessels
+
+def htmltags(): #function for calling html codes
+    htmlresponse = """<html><head>
+    <meta content="text/html; charset=utf-8" http-equiv="content-type">
+    <title>Group7</title>
+    </head>
+    <body>
+    <h2> Board Content</h2>
+    
+    <p> """ +mycontext['messagepost']+ """</p>
+    <p><h5>Timestamp: """ +mycontext['timestamp']+ """</h5></p><br>
+    <h3>Submit to board<h3>
+    <textarea rows="4" cols="50" name="comment" form="usrform"></textarea>
+    <form action="" id="usrform" method="post">
+    <input type="submit">
+    </form>
+    </body></html>"""
+    return htmlresponse
+
+#function for adding seq num, ip address and message as one block of content and storing it in mycontext['msg_container'] 
+def all_messages(many):  
+  mycontext['msg_lock'].acquire()
+  mycontext['msg_container'].append(many) 
+  mycontext['msg_lock'].release()
+
+#function for sending messages to other vessels apart from the sending vessel
+def sendmessage(msg):
+  my_ip = getmyip()
+  for i in mycontext['vessellist']:
+    if i != my_ip:
+      sockobj = openconn(i, 63100)
+      sockobj.send(str(msg))
+  sockobj.close()
+#function for sorting messages to display on the board according to their sequence numbers and later according to their IPs incase there's a tie in seq numbers
+def sequence_sorting():
+  my_msg = len(mycontext['msg_container'])
+  mycontext['messagepost'] = ""
+  last_msg = (my_msg-1)
+  exchange = True
+  if my_msg > 1:  
+    for num in range(last_msg):
+      if mycontext['msg_container'][num] > mycontext['msg_container'][num + 1]:
+        exchange = False
+        hold = mycontext['msg_container'][num + 1]
+        mycontext['msg_container'][num + 1] = mycontext['msg_container'][num]
+        mycontext['msg_container'][num] = hold
+      else:
+        exchange = True
+  
+  for sortedtext in mycontext['msg_container']:
+    msg_part = sortedtext.split('-')
+    mycontext['sequ']=sortedtext.split(":")[0]
+    #print(mycontext['sequ']+":"+ sortedtext.split(':')[1] )   #To check if the sorting by seq no and then IP, really works. 
+
+    mycontext['messagepost']=mycontext['messagepost'] + msg_part[1]
+
+    
+def board(ip, port, sockobj, thiscommhandle, listencommhandle):
+  msgheader = sockobj.recv(1024) # Receive message, 
+  # React depending on message type: HTTP GET or POST, or some other type of communication.
+  
+  if msgheader.startswith( 'GET' ):  #fetches the sent message from the sending vessel to the recipient's web browser
+     html_content = htmltags()
+     sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(html_content),  html_content))
+     stopcomm(thiscommhandle)  
+
+  elif msgheader.startswith( 'POST' ):    
+    updatemsg = msgheader[msgheader.find('comment')+8:] 
+    mycontext['messagepost'] = str(mycontext['seq_num']) +":"+ getmyip() +"-"+ updatemsg + '<br>'  #Content sorted displayed according to it's logical value and IP 
+    all_messages(mycontext['messagepost'])
+    mycontext['timestamp'] = str(getruntime()) #duration it will take for the blackboard to become consistent after messages have been posted in it.
+    mycontext['seq_lock'].acquire()
+    mycontext['seq_num'] += 1
+    mycontext['seq_lock'].release()
+    sendmessage(mycontext['messagepost'])
+    sequence_sorting() #Board content sorted and displayed according to it's sequence number or IP if the seq number was the same
+    sockobj.send("HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(htmltags()),  htmltags()))
+    stopcomm(thiscommhandle)
+
+  else:
+    #sleep(5)   #the sleep function enables the vessel to delay for a few seconds before posting.
+    new_text = msgheader.split(':')
+    seq_num = new_text[0]
+    mycontext['seq_lock'].acquire() #acquiring the logical clock(sequence number) lock before updating the sequence number(logical clock)
+    if seq_num > mycontext['seq_num']:
+      mycontext['seq_num']+= 1
+    else:
+      seq_num += 1
+    mycontext['seq_lock'].release() #releasing the logical clock(sequence number) lock after updating the sequence number(logical clock)
+    all_messages(msgheader)
+  sequence_sorting()
+  stopcomm(thiscommhandle)
+ 
+
+if callfunc == 'initialize':
+  if len(callargs) > 1:
+    raise Exception("Too many call arguments")
+
+  # Running remotely (assuming that we pass input argument only remotely):
+  # whenever this vessel gets a connection on its IPaddress:Clearinghouseport it'll call function board
+  elif len(callargs) == 1:
+    port = int(callargs[0])
+    ip = getmyip()
+
+  # Running locally:
+  # whenever we get a connection on 127.0.0.1:12345 we'll call board
+  else:
+    port = 12345
+    ip = '127.0.0.1'
+  listencommhandle = waitforconn(ip,port,board)
+  
+ 
